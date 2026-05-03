@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Shell Interface</title>
+    <style>
+        body {
+            font-family: 'Consolas', 'Monaco', monospace;
+            background-color: #1e1e1e;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+            overflow: hidden;
+        }
+        
+        .container {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background-color: #2d2d2d;
+            padding: 10px;
+            border-radius: 5px 5px 0 0;
+            border: 1px solid #555;
+            border-bottom: none;
+        }
+        
+        .title {
+            color: #00ff00;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        
+        .output {
+            background-color: #1e1e1e;
+            border: 1px solid #555;
+            border-top: none;
+            border-bottom: none;
+            padding: 10px;
+            flex: 1;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        
+        .input-area {
+            background-color: #2d2d2d;
+            border: 1px solid #555;
+            border-top: none;
+            border-radius: 0 0 5px 5px;
+            padding: 10px;
+            display: flex;
+            align-items: center;
+        }
+        
+        .prompt {
+            color: #00ff00;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        
+        .command-input {
+            background-color: #1e1e1e;
+            color: #ffffff;
+            border: 1px solid #555;
+            padding: 5px;
+            font-family: inherit;
+            font-size: 14px;
+            flex: 1;
+            outline: none;
+        }
+        
+        .command-input:focus {
+            border-color: #007acc;
+        }
+        
+        .button {
+            background-color: #007acc;
+            color: white;
+            border: none;
+            padding: 5px 15px;
+            margin-left: 10px;
+            cursor: pointer;
+            border-radius: 3px;
+            font-family: inherit;
+        }
+        
+        .button:hover {
+            background-color: #005a9e;
+        }
+        
+        .clear-button {
+            background-color: #dc3545;
+        }
+        
+        .clear-button:hover {
+            background-color: #c82333;
+        }
+        
+        .command {
+            color: #00ff00;
+        }
+        
+        .result {
+            color: #ffffff;
+        }
+        
+        .error {
+            color: #ff6b6b;
+        }
+        
+        .help {
+            color: #4ecdc4;
+        }
+        
+        .welcome {
+            color: #74b9ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="title">GUI Shell v1.0 - Web Interface</div>
+        </div>
+        
+        <div class="output" id="output"></div>
+        
+        <div class="input-area">
+            <span class="prompt" id="prompt">[$]$</span>
+            <input type="text" class="command-input" id="commandInput" placeholder="Enter command..." autofocus>
+            <button class="button" onclick="executeCommand()">Execute</button>
+            <button class="button clear-button" onclick="clearOutput()">Clear</button>
+        </div>
+    </div>
+
+    <script>
+        let currentDirectory = '/';
+        let commandHistory = [];
+        let historyIndex = -1;
+        
+        // File system state: dirs have listings; listing entries backed by dirs have a matching array key here
+        let fileSystem = (function bootstrap() {
+            const dirs = {};
+            dirs['/'] = ['.', '..', 'Documents', 'Downloads', 'Desktop', 'Pictures', 'Music', 'Videos', 'shell.cpp', 'README.md', 'web_shell.html'];
+            ['Documents', 'Downloads', 'Desktop', 'Pictures', 'Music', 'Videos'].forEach(function (name) {
+                dirs['/' + name] = ['.', '..'];
+            });
+            return dirs;
+        })();
+
+        function absPathParts(abs) {
+            if (abs === '/') return [];
+            return abs.split('/').filter(Boolean);
+        }
+
+        function resolveAbsolutePath(cwd, rawPath) {
+            if (!rawPath) return cwd;
+            const parts = rawPath.charAt(0) === '/' ? [] : absPathParts(cwd);
+            rawPath.split('/').forEach(function (c) {
+                if (c === '' || c === '.') return;
+                if (c === '..') {
+                    if (parts.length) parts.pop();
+                } else parts.push(c);
+            });
+            return parts.length === 0 ? '/' : '/' + parts.join('/');
+        }
+
+        function pathJoin(dir, name) {
+            return dir === '/' ? '/' + name : dir + '/' + name;
+        }
+
+        /** True if entry is a directory (has Children listing in fileSystem). Files never own a key. */
+        function entryIsDirectory(parentDir, entryName) {
+            if (!entryName || entryName === '.' || entryName === '..') return false;
+            const child = pathJoin(parentDir, entryName);
+            return Object.prototype.hasOwnProperty.call(fileSystem, child);
+        }
+
+        /** True if absolute path refers to an existing directory. */
+        function isDirectoryPath(abs) {
+            return Object.prototype.hasOwnProperty.call(fileSystem, abs);
+        }
+
+        /** Parent absolute path or null if already root. */
+        function parentPath(abs) {
+            const parts = absPathParts(abs);
+            if (parts.length <= 1) return parts.length === 1 ? '/' : null;
+            parts.pop();
+            return parts.length ? '/' + parts.join('/') : '/';
+        }
+
+        /** Last segment of absolute path */
+        function baseName(abs) {
+            const parts = absPathParts(abs);
+            return parts.length === 0 ? '' : parts[parts.length - 1];
+        }
+
+        /** Directory must be empty: only '.' and '..', no other listing entries without backing dir that has entries... Simple: listing has no entries except . .. */
+        function directoryListingEmpty(absDir) {
+            const list = fileSystem[absDir];
+            if (!list) return false;
+            var others = list.filter(function (n) { return n !== '.' && n !== '..'; });
+            return others.length === 0;
+        }
+
+        /** Remove listing entry parentDir/name (file or symlink to dir name), returns false if missing */
+        function removeListingEntry(parentDir, name) {
+            var lst = fileSystem[parentDir];
+            if (!lst || name === '.' || name === '..') return false;
+            var i = lst.indexOf(name);
+            if (i === -1) return false;
+            lst.splice(i, 1);
+            return true;
+        }
+
+        const output = document.getElementById('output');
+        const commandInput = document.getElementById('commandInput');
+        const prompt = document.getElementById('prompt');
+        
+        // Initialize
+        window.onload = function() {
+            appendOutput('Welcome to GUI Shell v1.0', 'welcome');
+            appendOutput('Type "help" for available commands', 'help');
+            appendOutput('', 'result');
+            updatePrompt();
+            commandInput.focus();
+        };
+        
+        commandInput.addEventListener('keydown', function(e) {
+            if (e.key === 'ArrowUp') {
+                navigateHistory(-1);
+                e.preventDefault();
+            } else if (e.key === 'ArrowDown') {
+                navigateHistory(1);
+                e.preventDefault();
+            } else if (e.key === 'Tab') {
+                autocompleteCommand();
+                e.preventDefault();
+            }
+        });
+        commandInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                executeCommand();
+            }
+        });
+        
+        function executeCommand() {
+            const command = commandInput.value.trim();
+            if (command === '') return;
+            
+            // Add to history
+            if (commandHistory.length === 0 || commandHistory[commandHistory.length - 1] !== command) {
+                commandHistory.push(command);
+                if (commandHistory.length > 100) {
+                    commandHistory.shift();
+                }
+            }
+            
+            // Display command
+            appendOutput('$ ' + command, 'command');
+            
+            // Execute command
+            const result = processCommand(command);
+            if (result !== '') {
+                var err = /Error|not found|cannot |failed to|Not a directory|not empty|Is a directory|Invalid argument|missing operand|already exists|File exists/;
+                appendOutput(result, err.test(result) ? 'error' : 'result');
+            }
+            
+            // Clear input
+            commandInput.value = '';
+            historyIndex = -1;
+            updatePrompt();
+            
+            // Scroll to bottom
+            output.scrollTop = output.scrollHeight;
+        }
+        
+        function processCommand(command) {
+            const parts = command.trim().split(/\s+/);
+            const cmd = parts[0];
+            const args = parts.slice(1);
+            
+            switch (cmd) {
+                case 'ls':
+                    return executeLs(args);
+                case 'cd':
+                    return executeCd(args);
+                case 'pwd':
+                    return executePwd();
+                case 'mkdir':
+                    return executeMkdir(args);
+                case 'rmdir':
+                    return executeRmdir(args);
+                case 'touch':
+                    return executeTouch(args);
+                case 'rm':
+                    return executeRm(args);
+                case 'cat':
+                    return executeCat(args);
+                case 'echo':
+                    return executeEcho(args);
+                case 'help':
+                    return executeHelp();
+                case 'clear':
+                    clearOutput();
+                    return '';
+                default:
+                    return 'Command not found: ' + cmd + '\nType \'help\' for available commands';
+            }
+        }
+        
+        function executeLs(args) {
+            const raw = args.length > 0 ? args[0] : currentDirectory;
+            const path = resolveAbsolutePath(currentDirectory, raw);
+            if (!isDirectoryPath(path)) {
+                return 'ls: cannot access \'' + (args[0] || path) + '\': No such file or directory';
+            }
+            return fileSystem[path].join('\n') + '\n';
+        }
+        
+        function executeCd(args) {
+            if (args.length === 0) {
+                return 'cd: missing operand';
+            }
+            const path = args[0];
+            const target =
+                path === '~' ? '/' : resolveAbsolutePath(currentDirectory, path);
+            if (!isDirectoryPath(target)) {
+                return 'cd: ' + args[0] + ': No such file or directory\n';
+            }
+            currentDirectory = target;
+            return '';
+        }
+        
+        function executePwd() {
+            return currentDirectory + '\n';
+        }
+        
+        function executeMkdir(args) {
+            if (args.length === 0) {
+                return 'mkdir: missing operand\nTry \'mkdir --help\' for more information.';
+            }
+            const full = resolveAbsolutePath(currentDirectory, args[0]);
+            if (full === '/') {
+                return 'mkdir: cannot create directory \'/\': File exists\n';
+            }
+            const par = parentPath(full);
+            const dirName = baseName(full);
+            if (par === null || !isDirectoryPath(par)) {
+                return 'mkdir: cannot create directory \'' + args[0] + '\': No such file or directory\n';
+            }
+            if (isDirectoryPath(full) || (fileSystem[par] && fileSystem[par].includes(dirName))) {
+                return 'mkdir: cannot create directory \'' + args[0] + '\': File exists\n';
+            }
+            if (!fileSystem[par]) fileSystem[par] = ['.', '..'];
+            fileSystem[par].push(dirName);
+            fileSystem[full] = ['.', '..'];
+            return 'Directory \'' + args[0] + '\' created\n';
+        }
+        
+        function executeRmdir(args) {
+            if (args.length === 0) {
+                return 'rmdir: missing operand\nTry \'rmdir --help\' for more information.';
+            }
+            const full = resolveAbsolutePath(currentDirectory, args[0]);
+            const par = parentPath(full);
+            const name = baseName(full);
+            if (par === null || name === '') {
+                return 'rmdir: failed to remove \'' + args[0] + '\': Invalid argument\n';
+            }
+            if (!isDirectoryPath(full)) {
+                if (fileSystem[par] && fileSystem[par].includes(name)) {
+                    return 'rmdir: failed to remove \'' + args[0] + '\': Not a directory\n';
+                }
+                return 'rmdir: failed to remove \'' + args[0] + '\': No such file or directory\n';
+            }
+            if (!directoryListingEmpty(full)) {
+                return 'rmdir: failed to remove \'' + args[0] + '\': Directory not empty\n';
+            }
+            delete fileSystem[full];
+            if (!removeListingEntry(par, name)) {
+                return 'rmdir: failed to remove \'' + args[0] + '\': No such file or directory\n';
+            }
+            return 'Directory \'' + args[0] + '\' removed\n';
+        }
+        
+        function executeTouch(args) {
+            if (args.length === 0) {
+                return 'touch: missing file operand\nTry \'touch --help\' for more information.';
+            }
+            let result = '';
+            for (let i = 0; i < args.length; i++) {
+                const full = resolveAbsolutePath(currentDirectory, args[i]);
+                if (full === '/') {
+                    result += 'touch: cannot touch \'/\': Is a directory\n';
+                    continue;
+                }
+                const par = parentPath(full);
+                const fileName = baseName(full);
+                if (par === null || !isDirectoryPath(par)) {
+                    result += 'touch: cannot touch \'' + args[i] + '\': No such file or directory\n';
+                    continue;
+                }
+                if (isDirectoryPath(full)) {
+                    result += 'touch: \'' + args[i] + '\': Is a directory\n';
+                    continue;
+                }
+                if (!fileSystem[par]) fileSystem[par] = ['.', '..'];
+                if (!fileSystem[par].includes(fileName)) {
+                    fileSystem[par].push(fileName);
+                    result += 'File \'' + args[i] + '\' created\n';
+                } else {
+                    result += 'touch: \'' + args[i] + '\': File already exists\n';
+                }
+            }
+            return result;
+        }
+        
+        function executeRm(args) {
+            if (args.length === 0) {
+                return 'rm: missing operand\nTry \'rm --help\' for more information.';
+            }
+            let result = '';
+            for (let i = 0; i < args.length; i++) {
+                const full = resolveAbsolutePath(currentDirectory, args[i]);
+                if (full === '/') {
+                    result += 'rm: cannot remove \'/\': Is a directory\n';
+                    continue;
+                }
+                const par = parentPath(full);
+                const fileName = baseName(full);
+                if (par === null || !fileSystem[par] || !fileSystem[par].includes(fileName)) {
+                    result += 'rm: cannot remove \'' + args[i] + '\': No such file or directory\n';
+                    continue;
+                }
+                if (entryIsDirectory(par, fileName)) {
+                    result += 'rm: cannot remove \'' + args[i] + '\': Is a directory\n';
+                    continue;
+                }
+                removeListingEntry(par, fileName);
+                result += 'File \'' + args[i] + '\' removed\n';
+            }
+            return result;
+        }
+        
+        function executeCat(args) {
+            if (args.length === 0) {
+                return 'cat: missing file operand\nTry \'cat --help\' for more information.';
+            }
+            let result = '';
+            for (let i = 0; i < args.length; i++) {
+                const full = resolveAbsolutePath(currentDirectory, args[i]);
+                const par = parentPath(full);
+                const file = baseName(full);
+                if (full === '/' || par === null) {
+                    result += 'cat: ' + args[i] + ': Is a directory\n';
+                    continue;
+                }
+                if (!fileSystem[par] || !fileSystem[par].includes(file)) {
+                    result += 'cat: \'' + args[i] + '\': No such file or directory\n';
+                    continue;
+                }
+                if (entryIsDirectory(par, file)) {
+                    result += 'cat: ' + args[i] + ': Is a directory\n';
+                    continue;
+                }
+                if (file === 'web_shell.html') {
+                    result += '<!DOCTYPE html>\n<html lang="en">\n<head>\n    <meta charset="UTF-8">\n    <title>Web Shell Interface</title>\n</head>\n<body>\n    <div class="container">\n        <div class="header">\n            <div class="title">GUI Shell v1.0</div>\n        </div>\n        <div class="output" id="output"></div>\n        <div class="input-area">\n            <input type="text" id="commandInput" />\n        </div>\n    </div>\n    <scr' + 'ipt>\n        // JavaScript shell implementation\n    </scr' + 'ipt>\n</body>\n</html>\n';
+                } else if (file === 'README.md') {
+                    result += '# Web Shell Interface\n\nA modern web-based shell interface.\n\n## Features\n\n- ls - List directory contents\n- cd - Change directory\n- pwd - Print working directory\n- mkdir - Create directory\n- rmdir - Remove directory\n- touch - Create file\n- rm - Remove file\n- cat - Display file contents\n- echo - Display text\n- help - Show commands\n- clear - Clear screen\n';
+                } else if (file === 'shell.cpp') {
+                    result += '#include <iostream>\n#include <string>\n#include <vector>\nusing namespace std;\n\nclass SimpleShell {\nprivate:\n    string current_directory;\n\npublic:\n    SimpleShell() {\n        current_directory = "/";\n    }\n\n    void run() {\n        // Shell implementation\n    }\n};\n\nint main() {\n    SimpleShell shell;\n    shell.run();\n    return 0;\n}\n';
+                } else {
+                    result += '\n';
+                }
+            }
+            return result;
+        }
+        
+        function executeEcho(args) {
+            return args.join(' ') + '\n';
+        }
+        
+        function executeHelp() {
+            return 'Available commands:\n' +
+                   '  ls [path]     - List directory contents\n' +
+                   '  cd <path>     - Change directory (~ is home: / )\n' +
+                   '  pwd           - Print working directory\n' +
+                   '  mkdir <path>  - Create directory (supports nested paths under existing dirs)\n' +
+                   '  rmdir <path>  - Remove empty directory only\n' +
+                   '  touch <file>  - Create empty file\n' +
+                   '  rm <file>     - Remove file only (not directories)\n' +
+                   '  cat <file>    - Display file contents\n' +
+                   '  echo <text>   - Display text\n' +
+                   '  clear         - Clear screen\n' +
+                   '  help          - Show this help message\n\n' +
+                   'Paths can be absolute or relative. Use rmdir for empty folders; rm is for files.\n\n' +
+                   'Navigation:\n' +
+                   '  Up/Down arrows - Command history\n' +
+                   '  Tab             - Autocomplete commands\n';
+        }
+        
+        function appendOutput(text, className) {
+            className = className || 'result';
+            const div = document.createElement('div');
+            div.className = className;
+            div.textContent = text;
+            output.appendChild(div);
+        }
+        
+        function clearOutput() {
+            output.innerHTML = '';
+            appendOutput('Screen cleared', 'help');
+        }
+        
+        function updatePrompt() {
+            prompt.textContent = '[' + currentDirectory + ']$ ';
+        }
+        
+        function navigateHistory(direction) {
+            if (direction === -1 && historyIndex < commandHistory.length - 1) {
+                historyIndex++;
+                commandInput.value = commandHistory[commandHistory.length - 1 - historyIndex];
+            } else if (direction === 1 && historyIndex > -1) {
+                historyIndex--;
+                if (historyIndex === -1) {
+                    commandInput.value = '';
+                } else {
+                    commandInput.value = commandHistory[commandHistory.length - 1 - historyIndex];
+                }
+            }
+        }
+        
+        function autocompleteCommand() {
+            const current = commandInput.value;
+            const commands = ['ls', 'cd', 'pwd', 'mkdir', 'rmdir', 'touch', 'rm', 'cat', 'echo', 'clear', 'help'];
+            
+            for (let i = 0; i < commands.length; i++) {
+                const cmd = commands[i];
+                if (cmd.startsWith(current) && cmd !== current) {
+                    commandInput.value = cmd;
+                    break;
+                }
+            }
+        }
+    </script>
+</body>
+</html>
