@@ -101,7 +101,6 @@ OS_Project/
 | Salma Medhat | 320240082 |
 | Malak Mohamed | 320240101 |
 | Salma Mohamed | 320240083 |
-| Mariam Ahmed | 320240105 |
-| Nouran Ibrahim | 320240097 |
+| Maryam Ahmed | 320240105 |
 
 </div>
